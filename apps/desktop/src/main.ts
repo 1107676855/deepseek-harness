@@ -9,7 +9,9 @@ import {
   dialog,
   ipcMain,
   Menu,
+  nativeImage,
   protocol,
+  Tray,
   type IpcMainInvokeEvent,
 } from 'electron'
 import { resolveDesktopPaths } from './paths.ts'
@@ -449,9 +451,23 @@ async function main(): Promise<void> {
     ],
   }]))
 
+  const tray = new Tray(nativeImage.createFromPath(join(app.getAppPath(), 'renderer', 'tray.png')))
+  tray.setToolTip('DeepSeek Harness')
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: messages.trayOpenWindow, click: () => { focusPrimaryWindow() } },
+    { type: 'separator' },
+    { label: messages.trayQuit, click: () => { app.quit() } },
+  ]))
+  tray.on('click', () => { focusPrimaryWindow() })
+
   const createMainWindow = (): BrowserWindow => {
     const window = createWindow(appPreload, true)
     mainWindow = window
+    window.on('close', (event) => {
+      if (quitting) return
+      event.preventDefault()
+      window.hide()
+    })
     window.on('closed', () => { if (mainWindow === window) mainWindow = undefined })
     window.webContents.on('preload-error', (_event, _path, error) => {
       void showEmergencyError(error).catch((failure: unknown) => { console.error(failure) })
