@@ -7,7 +7,6 @@ import { chmod, readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
-import extractZip from 'extract-zip'
 import { extract } from 'tar'
 import { resolveDesktopTargetBuildPaths } from './desktop-build-paths.mjs'
 
@@ -36,6 +35,16 @@ async function download(url: string, path: string): Promise<void> {
   writeFileSync(path, new Uint8Array(await response.arrayBuffer()), { mode: 0o600 })
 }
 
+function extractWindowsArchive(archive: string, extraction: string): void {
+  // extract-zip stalls on the upstream Node.js archive here; Expand-Archive completes it.
+  const command = `Expand-Archive -LiteralPath '${archive.replace(/'/gu, "''")}' -DestinationPath '${extraction.replace(/'/gu, "''")}' -Force`
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { stdio: 'inherit' })
+  if (result.error !== undefined) throw result.error
+  if (result.status !== 0) {
+    throw new Error(`desktop runtime: Expand-Archive exited with ${String(result.status ?? result.signal)}`)
+  }
+}
+
 async function prepareNode(platform: RuntimePlatform, arch: RuntimeArch): Promise<void> {
   const extension = platform === 'win' ? 'zip' : 'tar.gz'
   const folder = `node-v${NODE_VERSION}-${platform}-${arch}`
@@ -55,7 +64,7 @@ async function prepareNode(platform: RuntimePlatform, arch: RuntimeArch): Promis
   const extraction = BUILD_PATHS.nodeExtract
   rmSync(extraction, { recursive: true, force: true })
   mkdirSync(extraction, { recursive: true })
-  if (platform === 'win') await extractZip(archive, { dir: extraction })
+  if (platform === 'win') extractWindowsArchive(archive, extraction)
   else await extract({ cwd: extraction, file: archive })
   const source = join(extraction, folder, platform === 'win' ? 'node.exe' : 'bin/node')
   const destinationRoot = join(RUNTIME_ROOT, 'node')
