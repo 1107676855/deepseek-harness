@@ -533,6 +533,30 @@ describe('workspace browser rows', () => {
     expect(screen.queryByRole('menu')).toBeNull()
   })
 
+  it('session row menu copies the raw session id and flashes the copied label on the time cell', async () => {
+    const writes: string[] = []
+    const restoreClipboard = installClipboard(async (text) => { writes.push(text) })
+    vi.useFakeTimers()
+    try {
+      const node: SessionNode = {
+        id: sid('s-copy'), title: 'Copied', blank: false, running: false,
+        runningSubagentCount: 0, completed: false, hasActiveSchedule: false, updatedAt: 0,
+      }
+      render(<SessionNodeItem node={node} currentId={undefined} now={0} onOpen={vi.fn()}
+        onRename={vi.fn()} onFork={vi.fn()} onArchive={vi.fn()} t={t} />)
+      fireEvent.click(screen.getByRole('button', { name: '会话“Copied”的操作' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: '复制会话 ID' }))
+      await act(async () => { await Promise.resolve() })
+      expect(writes).toEqual(['s-copy'])
+      expect(screen.getByText('已复制')).toBeTruthy()
+      act(() => { vi.advanceTimersByTime(1200) })
+      expect(screen.queryByText('已复制')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+      restoreClipboard()
+    }
+  })
+
 
   it('shows the hover card after the dwell and suppresses it while the row menu is open', () => {
     vi.useFakeTimers()

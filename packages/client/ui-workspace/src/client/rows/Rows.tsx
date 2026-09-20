@@ -3,16 +3,16 @@
  * all data and callbacks arrive via props. Hover swaps (folder->chevron,
  * time->ellipsis, action buttons) are CSS-only, and a session row's clipped
  * title is scrolled programmatically while the row is hovered. Row ... menus are
- * visual-only except workspace Rename/Delete and session Rename/Fork/Archive; the
+ * visual-only except workspace Rename/Delete and session Rename/Fork/Copy ID/Archive; the
  * session and workspace hover cards are suppressed while a menu is open.
  */
 import { useEffect, useRef, useState } from 'react'
 import clsx from 'clsx'
 import {
   HoverCard, IconAlarmClockOutline16, IconArchiveOutline20, IconBranchOutline16,
-  IconEditOutline16, IconEllipsisOutline16, IconFolderClose16, IconFolderOpen16,
-  IconPlusOutline16, IconTrashOutline16, IconTriangleRightFill14, Menu, relativeTime,
-  StateDot,
+  IconCopyOutline16, IconEditOutline16, IconEllipsisOutline16, IconFolderClose16,
+  IconFolderOpen16, IconPlusOutline16, IconTrashOutline16, IconTriangleRightFill14,
+  Menu, relativeTime, StateDot, writeClipboard,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
 import { abbreviateHomePath } from '@deepseek-ai/dsh-util-workspace-path'
@@ -27,6 +27,9 @@ type RowTranslate = WorkspaceBrowserProps['t']
 function displayTitle(node: SessionNode, t: RowTranslate): string {
   return node.blank ? t('session.new') : node.title
 }
+
+/** How long the session row's time cell shows the copied confirmation. */
+const COPIED_FLASH_MS = 1200
 
 /**
  * Reveal a title wider than its one-line cell while its row is hovered: the
@@ -432,6 +435,8 @@ export function SessionNodeItem({
   const showStatus = primaryStatus.state !== 'done' || row.completed
   const draggable = drag !== undefined && !row.blank
   const [menuOpen, setMenuOpen] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const rowRef = useRef<HTMLDivElement>(null)
   const titleRef = useRef<HTMLSpanElement>(null)
   useEffect(() => {
@@ -439,12 +444,15 @@ export function SessionNodeItem({
     rowRef.current?.scrollIntoView({ block: 'nearest' })
     onReveal()
   }, [onReveal])
+  // The copied flash timer must not outlive the row.
+  useEffect(() => () => { clearTimeout(copiedTimer.current) }, [])
   // Archive hides the row through the registry-global archive set and never
   // touches the session log, so it is not styled as destructive and needs no
   // confirmation dialog.
   const sessionMenuItems = [
     { id: 'rename', label: t('rename'), icon: <IconEditOutline16 /> },
     { id: 'fork', label: t('menu.fork'), icon: <IconBranchOutline16 /> },
+    { id: 'copy-id', label: t('menu.copyId'), icon: <IconCopyOutline16 /> },
     // 20-native glyph in the menu's 16px icon slot (Menu.module.css .itemIcon).
     { id: 'archive', label: t('menu.archiveSession'), icon: <IconArchiveOutline20 size={16} /> },
   ]
@@ -501,7 +509,7 @@ export function SessionNodeItem({
           happened in it yet, so a "now" timestamp and the row verbs
           (rename/fork/archive) would all act on content that does not
           exist — both trailing cells stay off until the first prompt. */}
-      {!row.blank && <span className={css.time}>{timeLabel(row.updatedAt, now, t)}</span>}
+      {!row.blank && <span className={css.time}>{copied ? t('hover.copied') : timeLabel(row.updatedAt, now, t)}</span>}
       {!row.blank && (
         <span className={css.rowActions}>
           <Menu
@@ -512,6 +520,15 @@ export function SessionNodeItem({
               setMenuOpen(false)
               if (id === 'rename') onRename(node.id, row.title)
               if (id === 'fork') onFork(node.id)
+              if (id === 'copy-id') {
+                // The flash reuses the hover card's copied label; a rejected write stays silent.
+                void writeClipboard(node.id).then((accepted) => {
+                  if (!accepted) return
+                  setCopied(true)
+                  clearTimeout(copiedTimer.current)
+                  copiedTimer.current = setTimeout(() => { setCopied(false) }, COPIED_FLASH_MS)
+                })
+              }
               if (id === 'archive') onArchive(node.id)
             }}
             portal
