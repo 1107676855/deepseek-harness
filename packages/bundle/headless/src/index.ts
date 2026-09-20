@@ -19,6 +19,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { assertNever } from '@deepseek-ai/dsh-util-values'
 import { SessionSeq } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
+import type { ModelSelection } from '@deepseek-ai/dsh-agent'
 // Empty type imports carry the loader Context merge for the settlement await
 // and the cmdline Context merge for the appExit host value.
 import type {} from '@deepseek-ai/cordis-plugin-loader'
@@ -34,10 +35,13 @@ export const inject = ['agentDefaultModel', 'agents', 'sessions']
 export interface Config {
   /** The prompt text for the single run. */
   task: string
+  /** Persisted session id to continue instead of starting a new session. */
+  resumeSessionId?: string
 }
 
 export const Config: z<Config> = z.object({
   task: z.string().required(),
+  resumeSessionId: z.string(),
 })
 
 /** Outcome of one owned run interval. */
@@ -162,12 +166,13 @@ function fail(io: HeadlessIo, error: unknown): void {
 }
 
 /**
- * Run one task through a freshly created Agent and request process exit.
+ * Run one task through a freshly created (or resumed) Agent and request process exit.
  * @param ctx - plugin context carrying the Agent, default model, Session, and launcher IO services.
  * @param task - one-shot task text.
+ * @param resumeSessionId - persisted session id to continue, or undefined for a fresh session.
  * @param io - process-facing effects.
  */
-async function run(ctx: Context, task: string, io: HeadlessIo): Promise<void> {
+async function run(ctx: Context, task: string, resumeSessionId: string | undefined, io: HeadlessIo): Promise<void> {
   // Loader siblings mount concurrently. Await the complete application before
   // creating an Agent so its scoped tools and adapters are not half-composed.
   await ctx.get('loader')?.await()
@@ -177,20 +182,42 @@ async function run(ctx: Context, task: string, io: HeadlessIo): Promise<void> {
   // Early process shutdown can dispose the tree while settlement is pending.
   if (agents === undefined || defaultModel === undefined || sessions === undefined) return
 
-  const selection = defaultModel.currentSelection()
-  // This bundle composes no preset roster, so the model-facing rows sit in the
-  // host plane and the agent reads them from the global layer. A deployment
-  // that DOES configure one has to join it here first
-  // (@deepseek-ai/dsh-agent-presets README, "Composing a child agent").
-  const { agent } = await agents.create({
-    sessionId: brandString<SessionId>(`session-${randomUUID()}`),
-    meta: { cwd: process.cwd() },
-    agentOptions: { provider: selection.provider, model: selection.model },
-    setup: (agentCtx) => {
-      const selected: ModelSelectionRef = { current: selection, assembled: undefined }
-      installModelSelection(agentCtx, selected)
-    },
-  })
+  // Restore the latest logged route before falling back to deployment config,
+  // so a resumed session continues on the model that produced its history.
+  const selectionFor = (
+    logged: {
+      config: { provider: string; model: string; reasoningEffort?: ModelSelection['reasoningEffort'] }
+    } | undefined,
+  ): ModelSelection =>
+    logged === undefined
+      ? defaultModel.currentSelection()
+      : {
+        provider: logged.config.provider,
+        model: logged.config.model,
+        ...(logged.config.reasoningEffort === undefined ? {} : { reasoningEffort: logged.config.reasoningEffort }),
+      }
+
+  const { agent } = resumeSessionId === undefined
+    ? await agents.create({
+      // This bundle composes no preset roster, so the model-facing rows sit in the
+      // host plane and the agent reads them from the global layer. A deployment
+      // that DOES configure one has to join it here first
+      // (@deepseek-ai/dsh-agent-presets README, "Composing a child agent").
+      sessionId: brandString<SessionId>(`session-${randomUUID()}`),
+      meta: { cwd: process.cwd() },
+      agentOptions: { provider: defaultModel.currentSelection().provider, model: defaultModel.currentSelection().model },
+      setup: (agentCtx) => {
+        const selected: ModelSelectionRef = { current: defaultModel.currentSelection(), assembled: undefined }
+        installModelSelection(agentCtx, selected)
+      },
+    })
+    : await agents.resume({
+      resumeSessionId: brandString<SessionId>(resumeSessionId),
+      setup: (agentCtx, agent) => {
+        const selected: ModelSelectionRef = { current: selectionFor(agent.session.requestHeader()), assembled: undefined }
+        installModelSelection(agentCtx, selected)
+      },
+    })
   await agent.whenIdle()
   const firstSeq = agent.session.seq
   const stopReasoning = streamReasoning(ctx, agent, io.stderr)
@@ -225,5 +252,5 @@ export function apply(ctx: Context, config: Config): void {
     throw new Error('headless-runner: the launcher must provide ctx.appExit before the tree mounts')
   }
   const io: HeadlessIo = { stdout: internals.stdout, stderr: internals.stderr, exit }
-  void run(ctx, config.task, io).catch((error: unknown) => { fail(io, error) })
+  void run(ctx, config.task, config.resumeSessionId, io).catch((error: unknown) => { fail(io, error) })
 }
